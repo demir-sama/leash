@@ -40,7 +40,7 @@ export async function POST(req: Request) {
         await wait(250);
         send({ k: "step", id: "shop", text: `Browsing ${shortlist.length} listings from ${new Set(shortlist.map((i) => i.merchant)).size} shops`, done: "read" });
         const flagged = shortlist.filter(injected);
-        if (flagged.length) send({ k: "warn", text: `${flagged.length} listing${flagged.length > 1 ? "s" : ""} contain text aimed at AI agents. The agent may fall for it; the leash will not.` });
+        if (flagged.length) send({ k: "warn", text: `${flagged.length} listing${flagged.length > 1 ? "s contain" : " contains"} text aimed at AI agents. The agent may fall for it; the leash will not.` });
         let plan: PlanT, model = "keyword fallback";
         try {
           const r = await withModel((m) => generateJSON({
