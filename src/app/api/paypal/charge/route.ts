@@ -1,37 +1,46 @@
 import { chargeVault, PayPalError } from "@/lib/paypal";
-import { readSession, writeSession, signReceipt } from "@/lib/session";
+import { readSession, writeSession, publicView } from "@/lib/session";
+import { readMandate } from "@/lib/mandate";
 import { evaluateCart } from "@/lib/policy";
 import { byId } from "@/lib/catalog";
+import { limit } from "@/lib/ratelimit";
 export const dynamic = "force-dynamic";
 
 /**
- * The only place money moves. The leash is re-evaluated here against the signed server-side session,
- * so neither the browser nor the model can talk their way past it.
- * Body: { itemId, qty, errand, human?: boolean }
+ * The only place money moves. Body: { mandate, line, approve? }.
+ * The line must come from a server-signed cart, can be spent once, and is re-checked against the current rules.
  */
 export async function POST(req: Request) {
   const s = await readSession();
   if (!s) return Response.json({ error: "No leash granted yet" }, { status: 401 });
-  const { itemId, qty = 1, errand = "", human = false } = await req.json();
-  const item = byId(itemId);
-  const q = Math.max(1, Math.min(5, Number(qty) || 1));
-  if (!item) return Response.json({ error: "Unknown item" }, { status: 400 });
-  const [v] = evaluateCart([{ itemId, qty: q }], s.rules, { spent: s.spent, count: s.count });
-  if (v.decision === "block") return Response.json({ error: "Blocked by the leash", verdict: v }, { status: 403 });
-  if (v.decision === "ask" && !human) return Response.json({ error: "Needs your approval", verdict: v }, { status: 409 });
-  const amount = +(item.price * q).toFixed(2);
-  const invoiceId = `LEASH-${Date.now().toString(36)}-${item.id}`.toUpperCase();
+  if (!limit(req, "charge", 20)) return Response.json({ error: "Too many charges in a minute" }, { status: 429 });
+  const { mandate, line, approve = false } = await req.json().catch(() => ({}));
+  let m;
+  try { m = readMandate(mandate, s.vaultId); } catch (e) { return Response.json({ error: (e as Error).message }, { status: 403 }); }
+  const i = Number(line), l = m.lines[i];
+  if (!l) return Response.json({ error: "That line is not in the signed cart" }, { status: 400 });
+  const tag = `${m.n}:${i}`;
+  if (s.used.includes(tag)) return Response.json({ error: "Already paid. A signed line can only be spent once.", code: "replay" }, { status: 409 });
+  const item = byId(l.itemId)!;
+  const [v] = evaluateCart([l], s.rules, { spent: s.spent, count: s.count });
+  if (v.decision === "block") return Response.json({ error: v.checks.find((c) => !c.ok)?.text || "Blocked by the leash", verdict: v, code: "blocked" }, { status: 403 });
+  if (v.decision === "ask" && approve !== true) return Response.json({ error: "Needs your tap", verdict: v, code: "ask" }, { status: 409 });
+  const amount = v.amount;
+  const invoiceId = `LSH-${m.n}-${i}`.toUpperCase();
+  // reserve the line before calling PayPal so a double tap can't charge twice
+  await writeSession({ ...s, used: [...s.used, tag] });
   try {
     const r = s.mode === "sandbox"
-      ? await chargeVault({ vaultId: s.vaultId, amount: amount.toFixed(2), currency: s.rules.currency, description: `${q}× ${item.name} · ${item.merchant}`, merchant: item.merchant, invoiceId, requestId: invoiceId })
-      : { orderId: `SIM-O-${crypto.randomUUID().slice(0, 10).toUpperCase()}`, captureId: `SIM-C-${crypto.randomUUID().slice(0, 10).toUpperCase()}`, status: "COMPLETED" };
-    await writeSession({ ...s, spent: +(s.spent + amount).toFixed(2), count: s.count + 1 });
-    const at = new Date().toISOString();
-    return Response.json({
-      entry: { id: invoiceId, at, sig: signReceipt(r.captureId, amount, at, s.vaultId), itemId: item.id, name: q > 1 ? `${q}× ${item.name}` : item.name, merchant: item.merchant, category: item.category, amount, currency: s.rules.currency, errand: String(errand).slice(0, 200), why: "", orderId: r.orderId, captureId: r.captureId, mode: s.mode, approvedBy: human ? "human" : "leash" },
-    });
+      ? await chargeVault({ vaultId: s.vaultId, amount: amount.toFixed(2), currency: s.rules.currency, description: `${l.qty}× ${item.name} · ${item.merchant}`, merchant: item.merchant, invoiceId, requestId: invoiceId })
+      : { orderId: `SIM-O-${rand()}`, captureId: `SIM-C-${rand()}`, status: "COMPLETED" };
+    const row = { id: invoiceId, at: new Date().toISOString(), itemId: item.id, qty: l.qty, amount, currency: s.rules.currency, orderId: r.orderId, captureId: r.captureId, by: approve ? "human" as const : "leash" as const, errand: m.errand.slice(0, 90) };
+    const next = { ...s, used: [...s.used, tag], spent: +(s.spent + amount).toFixed(2), count: s.count + 1, ledger: [row, ...s.ledger] };
+    await writeSession(next);
+    return Response.json({ row, session: publicView(next) });
   } catch (e) {
+    await writeSession({ ...s, used: s.used.filter((u) => u !== tag) }); // release so the owner can retry
     const pe = e as PayPalError;
-    return Response.json({ error: pe.message, debugId: pe.debugId }, { status: pe.status && pe.status < 600 ? pe.status : 502 });
+    return Response.json({ error: `PayPal declined: ${pe.message}`, debugId: pe.debugId, code: "paypal" }, { status: 502 });
   }
 }
+const rand = () => crypto.randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase();
