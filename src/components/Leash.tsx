@@ -181,7 +181,7 @@ function RulesCard({ rules, setRules, spent, count, session, onGrant, paypal }: 
   const m = (n: number) => money(n, local.currency);
   const toggleCat = (c: Category) => set("categories", local.categories.includes(c) ? local.categories.filter((x) => x !== c) : [...local.categories, c]);
   return (
-    <aside className="card h-fit p-6 lg:sticky lg:top-6">
+    <aside className="card h-fit self-start p-6 lg:sticky lg:top-6">
       <div className="flex items-center justify-between"><span className="tick">The leash</span><span className="chip">{session ? (session.mode === "sandbox" ? "enforced · PayPal" : "enforced · simulated") : "draft"}</span></div>
       <div className="relative mt-4 flex items-center gap-5">
         <div className="relative"><Ring spent={spent} cap={local.monthlyCap} />
