@@ -61,7 +61,7 @@ export async function chargeVault(o: { vaultId: string; amount: string; currency
     intent: "CAPTURE",
     purchase_units: [{
       reference_id: o.invoiceId, invoice_id: o.invoiceId, description: o.description.slice(0, 127), soft_descriptor: "LEASH AGENT",
-      amount: { currency_code: o.currency, value: o.amount },
+      amount: { currency_code: o.currency, value: o.amount, breakdown: { item_total: { currency_code: o.currency, value: o.amount } } },
       items: [{ name: o.description.slice(0, 127), quantity: "1", category: "DIGITAL_GOODS", unit_amount: { currency_code: o.currency, value: o.amount } }].map((i) => i),
     }],
     payment_source: { paypal: { vault_id: o.vaultId, stored_credential: { payment_initiator: "MERCHANT", payment_type: "UNSCHEDULED", usage: "SUBSEQUENT" } } },
